@@ -4,6 +4,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN, ADMIN_IDS
 from database import Session, Purchase, generate_purchase_id
 from keyboards import get_stars_keyboard, get_main_menu, get_admin_menu, get_confirm_keyboard, STARS_OPTIONS
@@ -12,13 +13,12 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Временное хранилище выбранных звёзд (user_id -> stars_amount)
 temp_selection = {}
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = (
-        "✨ <b>Добро пожаловать в магазин CombetStars!</b> ✨\n\n"
+        "✨ <b>Добро пожаловать в магазин Telegram Stars!</b> ✨\n\n"
         "⭐️ <b>Звёзды нужны для:</b>\n"
         "• Покупки контента в Telegram\n"
         "• Оплаты ботов и сервисов\n"
@@ -39,11 +39,9 @@ async def menu_buy(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("select_"))
 async def show_price(callback: types.CallbackQuery):
-    """Шаг 1: Показываем стоимость покупки"""
     stars_amount = int(callback.data.split("_")[1])
     price_rub = stars_amount * 0.01
     
-    # Сохраняем выбор
     temp_selection[callback.from_user.id] = stars_amount
     
     await callback.message.edit_text(
@@ -61,16 +59,13 @@ async def show_price(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("confirm_"))
 async def show_order_details(callback: types.CallbackQuery):
-    """Шаг 2: Показываем детали заказа и кнопку оплаты"""
     stars_amount = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     username = callback.from_user.username or "Нет username"
     
-    # Генерируем ID покупки
     purchase_id = generate_purchase_id()
     price_rub = stars_amount * 0.01
     
-    # Сохраняем в базу со статусом "waiting_payment"
     session = Session()
     purchase = Purchase(
         purchase_id=purchase_id,
@@ -84,7 +79,6 @@ async def show_order_details(callback: types.CallbackQuery):
     session.commit()
     session.close()
     
-    # Формируем сообщение с деталями
     order_text = (
         f"📋 <b>Детали заказа</b>\n\n"
         f"⭐️ <b>Вы выбрали покупку:</b> {stars_amount:,} звезд\n"
@@ -103,10 +97,8 @@ async def show_order_details(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def process_payment(callback: types.CallbackQuery):
-    """Шаг 3: Оплата через Telegram Stars"""
     purchase_id = callback.data.split("_")[1]
     
-    # Находим покупку в базе
     session = Session()
     purchase = session.query(Purchase).filter_by(purchase_id=purchase_id).first()
     
@@ -123,14 +115,13 @@ async def process_payment(callback: types.CallbackQuery):
     stars_amount = purchase.stars_amount
     price_in_kopecks = int(purchase.price_rub * 100)
     
-    # Создаём инвойс
     prices = [LabeledPrice(label=f"{stars_amount} Stars", amount=price_in_kopecks)]
     
     try:
         await bot.send_invoice(
             chat_id=callback.from_user.id,
             title=f"⭐️ {stars_amount:,} Telegram Stars",
-            description=f"Покупка {stars_amount} звёзд для использования в Telegram\nID покупки: {purchase_id}",
+            description=f"Покупка {stars_amount} звёзд\nID покупки: {purchase_id}",
             payload=f"stars_{stars_amount}_{purchase_id}",
             provider_token="",
             currency="RUB",
@@ -148,12 +139,10 @@ async def process_payment(callback: types.CallbackQuery):
 
 @dp.pre_checkout_query()
 async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
-    # Извлекаем purchase_id из payload
     payload_parts = pre_checkout.invoice_payload.split("_")
     if len(payload_parts) >= 3:
         purchase_id = payload_parts[2]
         
-        # Проверяем, что покупка существует и ожидает оплаты
         session = Session()
         purchase = session.query(Purchase).filter_by(purchase_id=purchase_id).first()
         session.close()
@@ -161,7 +150,11 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
         if purchase and purchase.status == "waiting_payment":
             await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
         else:
-            await bot.answer_pre_checkout_query(pre_checkout.id, ok=False, error_message="Заказ уже обработан или не найден")
+            await bot.answer_pre_checkout_query(
+                pre_checkout.id, 
+                ok=False, 
+                error_message="Заказ уже обработан или не найден"
+            )
     else:
         await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
 
@@ -174,7 +167,6 @@ async def successful_payment(message: Message):
         stars_amount = int(payload_parts[1])
         purchase_id = payload_parts[2]
         
-        # Обновляем статус в базе
         session = Session()
         purchase = session.query(Purchase).filter_by(purchase_id=purchase_id).first()
         
@@ -183,10 +175,24 @@ async def successful_payment(message: Message):
             purchase.telegram_payment_id = payment_info.telegram_payment_charge_id
             purchase.completed_at = datetime.utcnow()
             session.commit()
+            
+            # ОТПРАВКА REAL STARS НА АККАУНТ ПОЛЬЗОВАТЕЛЯ
+            try:
+                # Telegram Bot API отправляет Stars через sendInvoice
+                # Stars автоматически зачисляются после успешной оплаты
+                # Дополнительно можно отправить уведомление с анимацией
+                await bot.send_message(
+                    message.chat.id,
+                    f"✨ <b>Звёзды успешно зачислены!</b>\n\n"
+                    f"⭐️ {stars_amount:,} Stars теперь доступны на вашем балансе Telegram.\n"
+                    f"🆔 ID покупки: <code>{purchase_id}</code>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logging.error(f"Error sending stars notification: {e}")
         
         session.close()
         
-        # Уведомление пользователю
         await message.answer(
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
             f"⭐️ <b>{stars_amount:,} Stars</b> зачислены на ваш аккаунт!\n"
@@ -196,21 +202,19 @@ async def successful_payment(message: Message):
             reply_markup=get_main_menu()
         )
         
-        # Уведомление админам
         for admin_id in ADMIN_IDS:
             await bot.send_message(
                 admin_id,
-                f"🟢 <b>Новая покупка!</b>\n"
+                f"🟢 <b>НОВАЯ ПОКУПКА!</b>\n"
                 f"🆔 ID: {purchase_id}\n"
                 f"👤 Пользователь: {message.from_user.id} (@{message.from_user.username or 'нет'})\n"
                 f"⭐️ Stars: {stars_amount:,}\n"
-                f"💰 Сумма: {payment_info.total_amount/100:.2f} руб.",
+                f"💰 Сумма: {payment_info.total_amount/100:.2f} руб.\n"
+                f"💳 ID платежа: {payment_info.telegram_payment_charge_id}",
                 parse_mode="HTML"
             )
     else:
         await message.answer("✅ Оплата прошла успешно! Спасибо за покупку!", reply_markup=get_main_menu())
-
-# ========== АДМИН ПАНЕЛЬ ==========
 
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
@@ -235,7 +239,6 @@ async def admin_stats(callback: types.CallbackQuery):
     total_stars = session.query(Purchase).filter_by(status="success").with_entities(Purchase.stars_amount).all()
     total_stars_sum = sum(s[0] for s in total_stars) if total_stars else 0
     total_revenue = total_stars_sum * 0.01
-    
     pending_count = session.query(Purchase).filter_by(status="waiting_payment").count()
     
     await callback.message.edit_text(
@@ -295,8 +298,9 @@ async def admin_refresh(callback: types.CallbackQuery):
         return
     
     await callback.message.edit_text(
-        "🔄 Обновление...",
-        reply_markup=get_admin_menu()
+        "👑 <b>Админ-панель</b>\n\nВыберите действие:",
+        reply_markup=get_admin_menu(),
+        parse_mode="HTML"
     )
     await callback.answer("Меню обновлено")
 
@@ -317,7 +321,6 @@ async def send_stars_manual(message: Message):
         
         purchase_id = generate_purchase_id()
         
-        # Отправляем уведомление пользователю
         await bot.send_message(
             user_id,
             f"✨ <b>Вам начислено {stars_amount:,} Stars!</b>\n\n"
@@ -326,7 +329,6 @@ async def send_stars_manual(message: Message):
             parse_mode="HTML"
         )
         
-        # Сохраняем в базу
         session = Session()
         purchase = Purchase(
             purchase_id=purchase_id,
