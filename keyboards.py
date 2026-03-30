@@ -27,7 +27,7 @@ def get_admin_menu():
     builder.button(text="📊 Статистика", callback_data="admin_stats")
     builder.button(text="💰 Ручная выдача Stars", callback_data="admin_manual")
     builder.button(text="📋 Список покупок", callback_data="admin_orders")
-    builder.button(text="🔄 Обновить статус", callback_data="admin_refresh")
+    builder.button(text="🔄 Обновить", callback_data="admin_refresh")
     builder.adjust(1)
     return builder.as_markup()
 
